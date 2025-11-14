@@ -1,11 +1,15 @@
 # video-downloader
 
-Simple YouTube / Instagram Reels downloader powered by `yt-dlp`. Use either the CLI script or the bundled Flask web page.
+Simple YouTube / Instagram Reels downloader powered by `yt-dlp`. Use either the CLI script or the bundled Flask web page. The project currently targets **Python 3.11**, so make sure your virtual environment uses that version (e.g., via `pyenv local 3.11.8` before creating `.venv`).
 
 ## Setup
 
+1. Make sure Python 3.11 is available (e.g., `pyenv install 3.11.8`).
+2. Create a 3.11 virtual environment and install dependencies:
+
 ```bash
-python -m venv .venv
+pyenv local 3.11.8        # optional but keeps python pointing to 3.11
+python3.11 -m venv .venv  # creates a 3.11-based venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
