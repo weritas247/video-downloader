@@ -13,7 +13,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List
 
-from flask import Flask, jsonify, request
+from flask import Flask, abort, jsonify, request, send_from_directory
 
 from downloader import download_urls, resolve_output_dir
 from transcription import transcribe_audio
@@ -22,6 +22,7 @@ app = Flask(__name__)
 
 JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
+SOUND_DIR = Path(__file__).resolve().parent / "sound"
 
 
 HTML_PAGE = """<!doctype html>
@@ -203,6 +204,28 @@ HTML_PAGE = """<!doctype html>
     const progressText = document.getElementById("progress-text");
     const transcriptStatus = document.getElementById("transcript-status");
     const PLACEHOLDER_THUMB = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="120" height="68" viewBox="0 0 120 68"%3E%3Crect width="120" height="68" rx="8" fill="%232d334a"/%3E%3Cpath d="M48 22l26 12-26 12z" fill="%235a8dee"/%3E%3C/svg%3E';
+    const createSound = (path) => {
+      const audio = new Audio(path);
+      audio.preload = "auto";
+      audio.crossOrigin = "anonymous";
+      return audio;
+    };
+    const playSound = (audio) => {
+      if (!audio) return;
+      try {
+        audio.currentTime = 0;
+        const playPromise = audio.play();
+        if (playPromise && typeof playPromise.catch === "function") {
+          playPromise.catch(() => {});
+        }
+      } catch (error) {
+        console.warn("사운드 재생 실패", error);
+      }
+    };
+    const downloadSuccessSound = createSound("/sound/download_success.mp3");
+    const downloadFailSound = createSound("/sound/downalod_fail.mp3");
+    const transcriptSuccessSound = createSound("/sound/transscript_success.mp3");
+    const transcriptFailSound = createSound("/sound/transscript_fail.mp3");
     audioOnlyField.checked = false;
 
     const formatEta = (ms) => {
@@ -237,12 +260,20 @@ HTML_PAGE = """<!doctype html>
     let autoStartTimer = null;
     let historyEntries = [];
     let transcriptStartTimestamp = null;
+    let downloadSoundPlayed = false;
+    let downloadFailSoundPlayed = false;
+    let transcriptSoundPlayed = false;
+    let transcriptFailSoundPlayed = false;
 
     const resetProgress = () => {
       progressBar.style.width = "0%";
       progressText.textContent = "";
       progressWrapper.classList.add("hidden");
       activeJobId = null;
+      downloadSoundPlayed = false;
+      downloadFailSoundPlayed = false;
+      transcriptSoundPlayed = false;
+      transcriptFailSoundPlayed = false;
     };
 
     const stopPolling = () => {
@@ -480,16 +511,47 @@ HTML_PAGE = """<!doctype html>
             addHistoryEntry(data);
             progressBar.style.width = "100%";
             progressText.textContent = `100% (${data.total}/${data.total}) 완료`;
+            if (!downloadSoundPlayed) {
+              downloadSoundPlayed = true;
+              playSound(downloadSuccessSound);
+            }
           } else if (data.status === "completed") {
             stopPolling();
             statusBox.textContent = "다운로드 완료!";
             addHistoryEntry(data);
             progressBar.style.width = "100%";
             progressText.textContent = `100% (${data.total}/${data.total}) 완료`;
+            if (!downloadSoundPlayed) {
+              downloadSoundPlayed = true;
+              playSound(downloadSuccessSound);
+            }
           } else if (data.status === "error") {
             stopPolling();
             statusBox.textContent = data.error || "다운로드 중 오류가 발생했습니다.";
             updateTranscriptStatus({});  // hide
+            if (!downloadFailSoundPlayed) {
+              downloadFailSoundPlayed = true;
+              playSound(downloadFailSound);
+            }
+          }
+          if (
+            !transcriptSoundPlayed &&
+            data.transcript_total > 0 &&
+            data.transcript_completed >= data.transcript_total &&
+            data.status !== "transcribing" &&
+            (!data.transcript_errors || data.transcript_errors.length === 0)
+          ) {
+            transcriptSoundPlayed = true;
+            playSound(transcriptSuccessSound);
+          }
+          if (
+            !transcriptFailSoundPlayed &&
+            Array.isArray(data.transcript_errors) &&
+            data.transcript_errors.length > 0 &&
+            data.status !== "transcribing"
+          ) {
+            transcriptFailSoundPlayed = true;
+            playSound(transcriptFailSound);
           }
         } catch (error) {
           stopPolling();
@@ -970,6 +1032,14 @@ def _run_download_job(
 @app.get("/")
 def index() -> str:
     return HTML_PAGE
+
+
+@app.get("/sound/<path:filename>")
+def sound_file(filename: str):
+    target = SOUND_DIR / filename
+    if not target.exists() or not target.is_file():
+        abort(404)
+    return send_from_directory(SOUND_DIR, filename)
 
 
 @app.post("/api/download")

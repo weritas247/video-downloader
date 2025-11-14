@@ -44,7 +44,7 @@ def build_yt_dlp_opts(
     quiet: bool,
     *,
     keep_video_when_audio_only: bool = False,
-) -> tuple[dict, str]:
+) -> tuple[dict, str, str]:
     video_format = (
         "bv*[ext=mp4][vcodec^=avc]+ba[ext=m4a]/"
         "bv*[ext=mp4][vcodec^=h264]+ba[ext=m4a]/"
@@ -99,7 +99,7 @@ def build_yt_dlp_opts(
         )
     if postprocessors:
         opts["postprocessors"] = postprocessors
-    return opts, template
+    return opts, template, merge_ext
 
 
 def _ensure_kst_timezone() -> None:
@@ -128,6 +128,24 @@ def platform_subdirectory(url: str) -> Optional[str]:
     return None
 
 
+def _remove_existing_outputs(
+    ydl: "yt_dlp.YoutubeDL", info: dict, merge_ext: str
+) -> None:
+    """Remove existing files that would conflict with the download target."""
+    try:
+        base_path = Path(ydl.prepare_filename(info))
+    except Exception:
+        return
+    candidates = {base_path}
+    if merge_ext:
+        candidates.add(base_path.with_suffix(f".{merge_ext}"))
+    for candidate in candidates:
+        try:
+            candidate.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def download_urls(
     urls: Iterable[str],
     output_dir: Path,
@@ -140,7 +158,7 @@ def download_urls(
     item_complete_hook: Optional[ItemCompleteHook] = None,
 ) -> List[str]:
     yt_dlp = import_yt_dlp()
-    options, template = build_yt_dlp_opts(
+    options, template, merge_ext = build_yt_dlp_opts(
         output_dir,
         audio_only,
         filename_template,
@@ -153,12 +171,14 @@ def download_urls(
     with yt_dlp.YoutubeDL(options) as ydl:
         failed: List[str] = []
         for url in urls:
+            subdir = platform_subdirectory(url)
+            base_dir = output_dir / subdir if subdir else output_dir
+            base_dir.mkdir(parents=True, exist_ok=True)
+            ydl.params["outtmpl"]["default"] = str(base_dir / template)
             try:
-                subdir = platform_subdirectory(url)
-                base_dir = output_dir / subdir if subdir else output_dir
-                base_dir.mkdir(parents=True, exist_ok=True)
-                ydl.params["outtmpl"]["default"] = str(base_dir / template)
-                ydl.download([url])
+                info = ydl.extract_info(url, download=False)
+                _remove_existing_outputs(ydl, info, merge_ext)
+                ydl.process_ie_result(info, download=True)
                 if item_complete_hook:
                     item_complete_hook(url, True)
             except Exception:  # pragma: no cover - network path
