@@ -15,12 +15,12 @@ from typing import Any, Dict, List
 from flask import Flask, jsonify, request
 
 from downloader import download_urls, resolve_output_dir
+from transcription import transcribe_audio
 
 app = Flask(__name__)
 
 JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
-WHISPER_MODEL = None
 
 
 HTML_PAGE = """<!doctype html>
@@ -254,6 +254,7 @@ HTML_PAGE = """<!doctype html>
         ? entry.items.map((item) => item.name || "(파일명 정보 없음)")
         : ["(파일명 정보 없음)"];
       const transcripts = Array.isArray(entry.transcripts) ? entry.transcripts : [];
+      const transcriptErrors = Array.isArray(entry.transcriptErrors) ? entry.transcriptErrors : [];
       const timestamp = entry.timestamp || Date.now();
       const lines = [
         "파일명:",
@@ -264,6 +265,13 @@ HTML_PAGE = """<!doctype html>
         lines.push("스크립트 파일:");
         transcripts.forEach((item) => {
           const label = item.path ? `${item.name} (${item.path})` : item.name;
+          lines.push(`- ${label}`);
+        });
+      }
+      if (transcriptErrors.length) {
+        lines.push("스크립트 실패:");
+        transcriptErrors.forEach((err) => {
+          const label = err.file ? `${err.file}: ${err.error}` : err.error;
           lines.push(`- ${label}`);
         });
       }
@@ -301,10 +309,14 @@ HTML_PAGE = """<!doctype html>
               const transcripts = Array.isArray(entry.transcripts)
                 ? entry.transcripts.map((item) => normalizeTranscriptItem(item))
                 : [];
+              const transcriptErrors = Array.isArray(entry.transcriptErrors)
+                ? entry.transcriptErrors
+                : [];
               return {
                 ...entry,
                 items,
                 transcripts,
+                transcriptErrors,
                 failed: Array.isArray(entry.failed) ? entry.failed : [],
               };
             });
@@ -329,6 +341,7 @@ HTML_PAGE = """<!doctype html>
         failed: data.failed,
         items: (data.completed_files || []).map((item) => normalizeCompletedItem(item)),
         transcripts: (data.transcripts || []).map((item) => normalizeTranscriptItem(item)),
+        transcriptErrors: Array.isArray(data.transcript_errors) ? data.transcript_errors : [],
         timestamp: Date.now(),
       };
       historyEntries.unshift(entry);
@@ -352,6 +365,12 @@ HTML_PAGE = """<!doctype html>
 
           if (data.status === "transcribing") {
             statusBox.textContent = "스크립트 추출 중...";
+          } else if (data.status === "completed_with_warnings") {
+            stopPolling();
+            statusBox.textContent = "다운로드 완료 (스크립트 에러 확인 필요)";
+            addHistoryEntry(data);
+            progressBar.style.width = "100%";
+            progressText.textContent = `100% (${data.total}/${data.total}) 완료`;
           } else if (data.status === "completed") {
             stopPolling();
             statusBox.textContent = "다운로드 완료!";
@@ -511,37 +530,6 @@ def _generate_thumbnail_data(video_path: Path) -> str | None:
     if not video_path.exists():
         return None
 
-
-def _load_whisper_model():
-    global WHISPER_MODEL
-    if WHISPER_MODEL is not None:
-        return WHISPER_MODEL
-    try:
-        import whisper
-    except ImportError:
-        app.logger.warning("Whisper 모델을 불러올 수 없습니다. `pip install openai-whisper` 실행 후 다시 시도하세요.")
-        return None
-    WHISPER_MODEL = whisper.load_model("base")
-    return WHISPER_MODEL
-
-
-def _transcribe_audio(file_path: Path) -> str | None:
-    if not file_path.exists():
-        return None
-    model = _load_whisper_model()
-    if model is None:
-        return None
-    try:
-        result = model.transcribe(str(file_path), fp16=False)
-    except Exception as exc:
-        app.logger.warning("오디오 스크립트 생성 실패: %s", exc)
-        return None
-    text = (result.get("text") or "").strip()
-    if not text:
-        return None
-    transcript_path = file_path.with_suffix(".txt")
-    transcript_path.write_text(text, encoding="utf-8")
-    return str(transcript_path)
     thumb_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
@@ -658,14 +646,51 @@ def _run_download_job(
         if audio_only and completed_files:
             for file_info in completed_files:
                 path_str = file_info.get("path")
-                if not path_str:
+                target_path = None
+                if path_str:
+                    candidate = Path(path_str)
+                    if candidate.exists():
+                        target_path = candidate
+                    else:
+                        alt = candidate.with_suffix(".mp3")
+                        if alt.exists():
+                            target_path = alt
+                if target_path is None:
+                    filename = file_info.get("name") or ""
+                    if filename:
+                        direct = output_dir / filename
+                        if direct.exists():
+                            target_path = direct
+                        else:
+                            alt = direct.with_suffix(".mp3")
+                            if alt.exists():
+                                target_path = alt
+                if target_path is None or not target_path.exists():
                     continue
-                transcript_file = _transcribe_audio(Path(path_str))
-                if transcript_file:
+                file_info["path"] = str(target_path)
+                try:
+                    transcript_path = transcribe_audio(target_path)
+                except RuntimeError as exc:
+                    with JOBS_LOCK:
+                        job = JOBS.get(job_id)
+                        if job:
+                            job["status"] = "error"
+                            job["error"] = f"Whisper 모델 로딩 실패: {exc}"
+                    return
+                except Exception as exc:  # pragma: no cover - runtime guardrail
+                    app.logger.warning("오디오 스크립트 생성 실패 (%s): %s", target_path, exc)
+                    with JOBS_LOCK:
+                        job = JOBS.get(job_id)
+                        if job:
+                            job.setdefault("transcript_errors", []).append(
+                                {"file": str(target_path), "error": str(exc)}
+                            )
+                    continue
+                if transcript_path:
                     transcripts.append(
                         {
-                            "name": Path(transcript_file).name,
-                            "path": transcript_file,
+                            "name": Path(transcript_path).name,
+                            "path": str(transcript_path),
                             "source": file_info.get("name", ""),
                         }
                     )
@@ -679,6 +704,8 @@ def _run_download_job(
                 return
             if transcripts:
                 job["transcripts"] = transcripts
+            if "transcript_errors" in job and job["transcript_errors"]:
+                job["status"] = "completed_with_warnings"
             job["status"] = "completed"
             job["completed"] = job["total"]
             job["current_progress"] = 0.0
@@ -764,6 +791,14 @@ def job_progress(job_id: str):
             )
         else:
             normalized_transcripts.append({"name": str(entry), "source": "", "path": None})
+    transcript_errors = []
+    for entry in snapshot.get("transcript_errors", []):
+        if isinstance(entry, dict):
+            transcript_errors.append(
+                {"file": entry.get("file") or "", "error": entry.get("error") or ""}
+            )
+        else:
+            transcript_errors.append({"file": "", "error": str(entry)})
 
     return jsonify(
         {
@@ -779,6 +814,7 @@ def job_progress(job_id: str):
             "transcripts": normalized_transcripts,
             "transcript_total": snapshot.get("transcript_total", 0),
             "transcript_completed": snapshot.get("transcript_completed", 0),
+            "transcript_errors": transcript_errors,
             "error": snapshot.get("error"),
             "output_dir": snapshot.get("output_dir"),
         }

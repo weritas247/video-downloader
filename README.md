@@ -21,6 +21,16 @@ python downloader.py <url1> <url2> ... [--audio-only] [-o OUTPUT_DIR]
 Run `python downloader.py --help` to see all options.
 By default each file is saved as `[채널명]동영상제목(년월일시).mp4` (or `.mp3` when audio-only), using the download time for the timestamp.
 
+### Transcript-only CLI
+
+If you already have MP3 (or other audio) files and want to extract text, use the standalone transcriber:
+
+```bash
+python transcriber.py path/to/audio_or_directory [more paths] [-o TRANSCRIPT_DIR]
+```
+
+It scans the provided files/folders for common audio formats and writes a `.txt` file next to each audio (or inside `TRANSCRIPT_DIR` when supplied).
+
 ## Web interface
 
 ```bash

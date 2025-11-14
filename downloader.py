@@ -47,10 +47,8 @@ def build_yt_dlp_opts(
         format_selector = (
             "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
         )
-    default_ext = "mp3" if audio_only else "mp4"
-    template = (
-        filename_template
-        or f"[%(uploader)s]%(title)s(%(epoch>%Y년%m월%d일%H시)s).{default_ext}"
+    template = filename_template or (
+        "[%(uploader)s]%(title)s(%(epoch>%Y년%m월%d일%H시)s).%(ext)s"
     )
     output_template = str(output_dir / template)
 
