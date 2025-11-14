@@ -8,6 +8,7 @@ import uuid
 import base64
 import subprocess
 import tempfile
+import time
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List
@@ -42,7 +43,7 @@ HTML_PAGE = """<!doctype html>
     }
     body { font-family: system-ui, sans-serif; min-height: 100vh; margin: 0; line-height: 1.5; background: var(--bg); color: var(--text); padding: 2rem; box-sizing: border-box; }
     .container { max-width: 760px; margin: 0 auto; }
-    textarea, input { width: 100%; padding: 0.75rem; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); color: var(--text); }
+    textarea, input, select { width: 100%; padding: 0.75rem; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); color: var(--text); }
     textarea::placeholder, input::placeholder { color: var(--muted); }
     button { padding: 0.6rem 1.4rem; font-size: 1rem; border-radius: 999px; border: none; background: var(--accent); color: #fff; cursor: pointer; transition: background 0.2s ease; }
     button:hover { background: var(--accent-strong); }
@@ -95,16 +96,26 @@ HTML_PAGE = """<!doctype html>
         <textarea id="urls" rows="6"></textarea>
         <small>엔터 또는 쉼표로 여러 링크를 입력하면 일괄 다운로드 됩니다.</small>
       </div>
-      <div class="inline-fields">
-        <div class="form-group">
-          <label for="output">Output directory</label>
-          <input id="output" type="text" placeholder="downloads" />
-          <small>지정하지 않으면 기본 downloads 폴더를 사용합니다.</small>
-        </div>
-      </div>
       <div class="options">
-        <label class="checkbox-pill"><input id="audio-only" type="checkbox" /> Audio only (MP3)</label>
+        <label class="checkbox-pill"><input id="audio-only" type="checkbox" /> 스크립트 추출 (MP4 + MP3 + 자막)</label>
         <label class="checkbox-pill"><input id="quiet" type="checkbox" checked /> Quiet mode</label>
+      </div>
+      <div class="form-group" id="transcript-format-group">
+        <label for="transcript-format">스크립트 파일 형식</label>
+        <select id="transcript-format">
+          <option value="srt" selected>자막 (.srt)</option>
+          <option value="txt">텍스트 (.txt)</option>
+        </select>
+        <small>스크립트를 추출하는 경우, 생성할 파일 형식을 선택하세요.</small>
+      </div>
+      <div class="form-group" id="transcript-language-group">
+        <label for="transcript-language">스크립트 언어</label>
+        <select id="transcript-language">
+          <option value="auto" selected>자동 감지</option>
+          <option value="ko">한국어 고정</option>
+          <option value="en">영어 고정</option>
+        </select>
+        <small>특정 언어로 강제 추출하고 싶을 때 선택하세요.</small>
       </div>
       <div class="form-actions">
         <button type="submit">Download</button>
@@ -137,6 +148,10 @@ HTML_PAGE = """<!doctype html>
     const historyBox = document.getElementById("history");
     const clearHistoryBtn = document.getElementById("clear-history");
     const audioOnlyField = document.getElementById("audio-only");
+    const transcriptFormatField = document.getElementById("transcript-format");
+    const transcriptFormatGroup = document.getElementById("transcript-format-group");
+    const transcriptLanguageField = document.getElementById("transcript-language");
+    const transcriptLanguageGroup = document.getElementById("transcript-language-group");
     const modalBackdrop = document.getElementById("modal-backdrop");
     const modalImage = document.getElementById("modal-image");
     const urlsField = document.getElementById("urls");
@@ -147,10 +162,38 @@ HTML_PAGE = """<!doctype html>
     const PLACEHOLDER_THUMB = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="120" height="68" viewBox="0 0 120 68"%3E%3Crect width="120" height="68" rx="8" fill="%232d334a"/%3E%3Cpath d="M48 22l26 12-26 12z" fill="%235a8dee"/%3E%3C/svg%3E';
     audioOnlyField.checked = false;
 
+    const formatEta = (ms) => {
+      if (!Number.isFinite(ms) || ms <= 0) return "";
+      const totalSeconds = Math.round(ms / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      if (minutes > 0) {
+        return `${minutes}분 ${seconds}초`;
+      }
+      return `${seconds}초`;
+    };
+
+    const updateTranscriptFormatVisibility = () => {
+      if (!transcriptFormatGroup) return;
+      if (audioOnlyField.checked) {
+        transcriptFormatGroup.classList.remove("hidden");
+        if (transcriptLanguageGroup) {
+          transcriptLanguageGroup.classList.remove("hidden");
+        }
+      } else {
+        transcriptFormatGroup.classList.add("hidden");
+        if (transcriptLanguageGroup) {
+          transcriptLanguageGroup.classList.add("hidden");
+        }
+      }
+    };
+    updateTranscriptFormatVisibility();
+
     let pollTimer = null;
     let activeJobId = null;
     let autoStartTimer = null;
     let historyEntries = [];
+    let transcriptStartTimestamp = null;
 
     const resetProgress = () => {
       progressBar.style.width = "0%";
@@ -239,13 +282,30 @@ HTML_PAGE = """<!doctype html>
       if (data.status === "transcribing") {
         const done = data.transcript_completed || 0;
         const total = data.transcript_total || 0;
+        if (typeof data.transcript_started_at === "number" && data.transcript_started_at > 0) {
+          transcriptStartTimestamp = data.transcript_started_at * 1000;
+        }
         transcriptStatus.classList.remove("hidden");
-        transcriptStatus.textContent = total
+        let message = total
           ? `스크립트 추출 중... (${done}/${total})`
           : "스크립트 추출 중...";
+        const remaining = total - done;
+        if (transcriptStartTimestamp && done > 0 && remaining > 0) {
+          const elapsed = Date.now() - transcriptStartTimestamp;
+          if (elapsed > 0) {
+            const perItem = elapsed / done;
+            const etaMs = perItem * remaining;
+            const etaText = formatEta(etaMs);
+            if (etaText) {
+              message += ` · 예상 남은 시간: 약 ${etaText}`;
+            }
+          }
+        }
+        transcriptStatus.textContent = message;
       } else {
         transcriptStatus.classList.add("hidden");
         transcriptStatus.textContent = "";
+        transcriptStartTimestamp = null;
       }
     };
 
@@ -398,9 +458,10 @@ HTML_PAGE = """<!doctype html>
       statusBox.textContent = "다운로드 준비 중...";
       const payload = {
         urls: document.getElementById("urls").value,
-        output: document.getElementById("output").value,
         audio_only: audioOnlyField.checked,
         quiet: document.getElementById("quiet").checked,
+        transcript_format: audioOnlyField.checked ? transcriptFormatField.value : null,
+        transcript_language: audioOnlyField.checked ? transcriptLanguageField.value : null,
       };
 
       try {
@@ -430,6 +491,14 @@ HTML_PAGE = """<!doctype html>
     urlsField.addEventListener("input", (event) => {
       if (!urlsField.value.trim()) {
         cancelAutoStart();
+      }
+    });
+
+    audioOnlyField.addEventListener("change", () => {
+      updateTranscriptFormatVisibility();
+      if (!audioOnlyField.checked && transcriptStatus) {
+        transcriptStatus.classList.add("hidden");
+        transcriptStatus.textContent = "";
       }
     });
 
@@ -475,7 +544,13 @@ def _split_urls(url_blob: str) -> List[str]:
     return [item.strip() for item in url_blob.replace(",", "\n").splitlines() if item.strip()]
 
 
-def _create_job(total: int, output_dir: Path, audio_only: bool) -> str:
+def _create_job(
+    total: int,
+    output_dir: Path,
+    audio_only: bool,
+    transcript_format: str | None,
+    transcript_language: str | None,
+) -> str:
     job_id = uuid.uuid4().hex
     job_payload: Dict[str, Any] = {
         "status": "pending",
@@ -490,8 +565,11 @@ def _create_job(total: int, output_dir: Path, audio_only: bool) -> str:
         "audio_only": audio_only,
         "transcript_total": 0,
         "transcript_completed": 0,
+        "transcript_started_at": None,
         "error": None,
         "output_dir": str(output_dir.resolve()),
+        "transcript_format": transcript_format,
+        "transcript_language": transcript_language,
     }
     with JOBS_LOCK:
         JOBS[job_id] = job_payload
@@ -621,6 +699,8 @@ def _run_download_job(
     audio_only: bool,
     template: str | None,
     quiet: bool,
+    transcript_format: str | None,
+    transcript_language: str | None,
 ) -> None:
     try:
         failed = download_urls(
@@ -629,6 +709,7 @@ def _run_download_job(
             audio_only=audio_only,
             filename_template=template,
             quiet=quiet,
+            keep_video_when_audio_only=audio_only,
             progress_hook=partial(_progress_hook, job_id),
             item_complete_hook=partial(_item_complete, job_id),
         )
@@ -642,6 +723,7 @@ def _run_download_job(
                 job["status"] = "transcribing"
                 job["transcript_total"] = len(completed_files)
                 job["transcript_completed"] = 0
+                job["transcript_started_at"] = time.time()
         transcripts: List[Dict[str, str]] = []
         if audio_only and completed_files:
             for file_info in completed_files:
@@ -669,7 +751,11 @@ def _run_download_job(
                     continue
                 file_info["path"] = str(target_path)
                 try:
-                    transcript_path = transcribe_audio(target_path)
+                    transcript_path = transcribe_audio(
+                        target_path,
+                        transcript_format=transcript_format or "srt",
+                        language=transcript_language,
+                    )
                 except RuntimeError as exc:
                     with JOBS_LOCK:
                         job = JOBS.get(job_id)
@@ -735,11 +821,33 @@ def api_download():
     template = payload.get("template") or None
     audio_only = bool(payload.get("audio_only"))
     quiet = bool(payload.get("quiet", True))
+    if audio_only:
+        transcript_format = str(payload.get("transcript_format") or "srt").lower()
+        if transcript_format not in {"txt", "srt"}:
+            return jsonify({"error": "Unsupported script format."}), 400
+        raw_language = str(payload.get("transcript_language") or "auto").lower()
+        if raw_language not in {"auto", "ko", "en"}:
+            return jsonify({"error": "Unsupported language option."}), 400
+        transcript_language = None if raw_language == "auto" else raw_language
+    else:
+        transcript_format = None
+        transcript_language = None
 
-    job_id = _create_job(len(urls), output_dir, audio_only)
+    job_id = _create_job(
+        len(urls), output_dir, audio_only, transcript_format, transcript_language
+    )
     thread = threading.Thread(
         target=_run_download_job,
-        args=(job_id, urls, output_dir, audio_only, template, quiet),
+        args=(
+            job_id,
+            urls,
+            output_dir,
+            audio_only,
+            template,
+            quiet,
+            transcript_format,
+            transcript_language,
+        ),
         daemon=True,
     )
     thread.start()
@@ -814,7 +922,9 @@ def job_progress(job_id: str):
             "transcripts": normalized_transcripts,
             "transcript_total": snapshot.get("transcript_total", 0),
             "transcript_completed": snapshot.get("transcript_completed", 0),
+            "transcript_started_at": snapshot.get("transcript_started_at"),
             "transcript_errors": transcript_errors,
+            "transcript_language": snapshot.get("transcript_language"),
             "error": snapshot.get("error"),
             "output_dir": snapshot.get("output_dir"),
         }

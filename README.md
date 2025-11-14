@@ -30,10 +30,11 @@ By default each file is saved as `[채널명]동영상제목(년월일시).mp4` 
 If you already have MP3 (or other audio) files and want to extract text, use the standalone transcriber:
 
 ```bash
-python transcriber.py path/to/audio_or_directory [more paths] [-o TRANSCRIPT_DIR]
+python transcriber.py path/to/audio_or_directory [more paths] [-o TRANSCRIPT_DIR] [--format txt|srt] [--language auto|ko|en]
 ```
 
-It scans the provided files/folders for common audio formats and writes a `.txt` file next to each audio (or inside `TRANSCRIPT_DIR` when supplied).
+It scans the provided files/folders for common audio formats and writes a `.srt` subtitle next to each audio (or inside `TRANSCRIPT_DIR` when supplied).
+Use `--format txt` if you prefer plain text output instead, and `--language ko`/`--language en` if you want to force a specific transcription language (default is automatic detection).
 
 ## Web interface
 
@@ -41,4 +42,5 @@ It scans the provided files/folders for common audio formats and writes a `.txt`
 python web_app.py
 ```
 
-Open http://127.0.0.1:5000 in your browser, paste URLs (one per line), tweak options, and click **Download**. The web UI now shows a progress bar for the batch download, automatically clears the URL field after completion, and saves files under the `downloads/` directory by default. When **Audio only (MP3)** is checked, each MP3 is processed with Whisper and an accompanying transcript (`.txt`) is saved alongside the audio file.
+Open http://127.0.0.1:5000 in your browser, paste URLs (one per line), tweak options, and click **Download**. The web UI now shows a progress bar for the batch download, automatically clears the URL field after completion, and saves files under the `downloads/` directory by default. Check **스크립트 추출 (MP4 + MP3 + 자막)** when you want each video saved as MP4 plus an extracted MP3 and Whisper transcript (default `.srt`), or leave it unchecked to grab MP4 video only.
+Use the “스크립트 파일 형식” field (visible when script extraction is enabled) to switch between `.srt` and `.txt` transcript outputs, and use “스크립트 언어” to force Korean/English instead of automatic language detection.

@@ -5,10 +5,37 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 _MODEL_LOCK = threading.Lock()
 _WHISPER_MODEL = None
+
+TranscriptFormat = Literal["txt", "srt"]
+
+
+def _format_timestamp(value: float) -> str:
+    total_ms = max(0, int(value * 1000))
+    hours, remainder = divmod(total_ms, 3600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, milliseconds = divmod(remainder, 1_000)
+    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
+
+
+def _segments_to_srt(segments) -> str:
+    lines = []
+    for index, segment in enumerate(segments, start=1):
+        if not isinstance(segment, dict):
+            continue
+        text = (segment.get("text") or "").strip()
+        if not text:
+            continue
+        start = float(segment.get("start") or 0.0)
+        end = float(segment.get("end") or start)
+        lines.append(str(index))
+        lines.append(f"{_format_timestamp(start)} --> {_format_timestamp(end)}")
+        lines.append(text)
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def _load_model(model_name: str = "base"):
@@ -32,6 +59,8 @@ def transcribe_audio(
     *,
     output_path: Optional[Path] = None,
     model_name: str = "base",
+    transcript_format: TranscriptFormat = "txt",
+    language: Optional[str] = None,
 ) -> Optional[Path]:
     """
     Generate a transcript for `audio_path` using Whisper and return the saved text file path.
@@ -42,18 +71,40 @@ def transcribe_audio(
     if not audio_path.exists():
         return None
 
+    fmt = transcript_format.lower()
+    if fmt not in ("txt", "srt"):
+        raise ValueError(f"Unsupported transcript format: {transcript_format}")
+
     target = (
         output_path.expanduser().resolve()
         if output_path is not None
-        else audio_path.with_suffix(".txt")
+        else audio_path.with_suffix(".srt" if fmt == "srt" else ".txt")
     )
 
     model = _load_model(model_name)
-    result = model.transcribe(str(audio_path), fp16=False)
-    text = (result.get("text") or "").strip()
-    if not text:
+    transcribe_kwargs = {"fp16": False}
+    if language:
+        transcribe_kwargs["language"] = language
+    result = model.transcribe(str(audio_path), **transcribe_kwargs)
+    if fmt == "srt":
+        segments = result.get("segments")
+        if not segments:
+            fallback_text = (result.get("text") or "").strip()
+            if not fallback_text:
+                return None
+            segments = [
+                {
+                    "start": 0.0,
+                    "end": max(len(fallback_text) * 0.03, 0.1),
+                    "text": fallback_text,
+                }
+            ]
+        content = _segments_to_srt(segments)
+    else:
+        content = (result.get("text") or "").strip()
+    if not content:
         return None
-    target.write_text(text, encoding="utf-8")
+    target.write_text(content, encoding="utf-8")
     return target
 
 

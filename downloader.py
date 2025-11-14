@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import os
+import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
@@ -40,13 +42,16 @@ def build_yt_dlp_opts(
     audio_only: bool,
     filename_template: Optional[str],
     quiet: bool,
+    *,
+    keep_video_when_audio_only: bool = False,
 ) -> tuple[dict, str]:
-    if audio_only:
+    video_format = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+    if audio_only and not keep_video_when_audio_only:
         format_selector = "bestaudio/best"
+        merge_ext = "mp3"
     else:
-        format_selector = (
-            "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
-        )
+        format_selector = video_format
+        merge_ext = "mp4"
     template = filename_template or (
         "[%(uploader)s]%(title)s(%(epoch>%Y년%m월%d일%H시)s).%(ext)s"
     )
@@ -58,7 +63,7 @@ def build_yt_dlp_opts(
         "quiet": quiet,
         "noplaylist": True,
         "ignoreerrors": False,
-        "merge_output_format": "mp3" if audio_only else "mp4",
+        "merge_output_format": merge_ext,
     }
     if audio_only:
         opts["postprocessors"] = [
@@ -68,8 +73,23 @@ def build_yt_dlp_opts(
                 "preferredquality": "192",
             }
         ]
+        if keep_video_when_audio_only:
+            opts["keepvideo"] = True
     return opts, template
 
+
+def _ensure_kst_timezone() -> None:
+    if os.environ.get("TZ") == "Asia/Seoul":
+        return
+    os.environ["TZ"] = "Asia/Seoul"
+    if hasattr(time, "tzset"):
+        try:
+            time.tzset()
+        except Exception:
+            pass
+
+
+_ensure_kst_timezone()
 
 ProgressHook = Callable[[dict], None]
 ItemCompleteHook = Callable[[str, bool], None]
@@ -78,7 +98,7 @@ ItemCompleteHook = Callable[[str, bool], None]
 def platform_subdirectory(url: str) -> Optional[str]:
     lower = url.lower()
     if "instagram.com" in lower or "instagr.am" in lower:
-        return "insta"
+        return "Instagram"
     if "youtube.com" in lower or "youtu.be" in lower:
         return "Youtube"
     return None
@@ -90,11 +110,19 @@ def download_urls(
     audio_only: bool,
     filename_template: Optional[str],
     quiet: bool,
+    *,
+    keep_video_when_audio_only: bool = False,
     progress_hook: Optional[ProgressHook] = None,
     item_complete_hook: Optional[ItemCompleteHook] = None,
 ) -> List[str]:
     yt_dlp = import_yt_dlp()
-    options, template = build_yt_dlp_opts(output_dir, audio_only, filename_template, quiet)
+    options, template = build_yt_dlp_opts(
+        output_dir,
+        audio_only,
+        filename_template,
+        quiet,
+        keep_video_when_audio_only=keep_video_when_audio_only,
+    )
     if progress_hook is not None:
         options["progress_hooks"] = [progress_hook]
 
