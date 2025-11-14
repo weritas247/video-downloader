@@ -350,7 +350,9 @@ HTML_PAGE = """<!doctype html>
           updateProgressUI(data);
           updateTranscriptStatus(data);
 
-          if (data.status === "completed") {
+          if (data.status === "transcribing") {
+            statusBox.textContent = "스크립트 추출 중...";
+          } else if (data.status === "completed") {
             stopPolling();
             statusBox.textContent = "다운로드 완료!";
             addHistoryEntry(data);

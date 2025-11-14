@@ -1,10 +1,2 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Virtual environment
-.venv/
-venv/
-path/to/venv/
+# Downloads
+downloads/
