@@ -467,7 +467,12 @@ HTML_PAGE = """<!doctype html>
           updateProgressUI(data);
           updateTranscriptStatus(data);
 
-          if (data.status === "transcribing") {
+          if (data.status === "reencoding") {
+            const done = data.reencode_completed || 0;
+            const total = data.reencode_total || 0;
+            const progressLabel = total ? ` (${done}/${total})` : "";
+            statusBox.textContent = `릴스 호환성 변환 중${progressLabel}`;
+          } else if (data.status === "transcribing") {
             statusBox.textContent = "스크립트 추출 중...";
           } else if (data.status === "completed_with_warnings") {
             stopPolling();
@@ -625,6 +630,9 @@ def _create_job(
         "output_dir": str(output_dir.resolve()),
         "transcript_format": transcript_format,
         "transcript_language": transcript_language,
+        "reencode_h264": False,
+        "reencode_total": 0,
+        "reencode_completed": 0,
     }
     with JOBS_LOCK:
         JOBS[job_id] = job_payload
@@ -704,6 +712,73 @@ def _generate_thumbnail_data(video_path: Path) -> str | None:
         return None
 
 
+def _is_instagram_path(path: Path, output_dir: Path) -> bool:
+    try:
+        rel = path.resolve().relative_to(output_dir.resolve())
+    except Exception:
+        parts = [part.lower() for part in path.parts]
+        return "instagram" in parts
+    if not rel.parts:
+        return False
+    return rel.parts[0].lower() == "instagram"
+
+
+def _reencode_video_to_h264(video_path: Path) -> bool:
+    """Re-encode a video in-place to H.264 for broader compatibility."""
+    if not video_path.exists():
+        return False
+    if video_path.suffix.lower() != ".mp4":
+        return False
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".mp4",
+            prefix=f"{video_path.stem}_h264_",
+            dir=str(video_path.parent),
+            delete=False,
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+    except Exception:
+        return False
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(temp_path),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if proc.returncode != 0 or not temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+            return False
+        video_path.unlink(missing_ok=True)
+        temp_path.replace(video_path)
+        return True
+    except Exception as exc:
+        app.logger.warning("릴스 호환성 변환 실패 (%s): %s", video_path, exc)
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        return False
+
+
 def _progress_hook(job_id: str, data: dict) -> None:
     info = data.get("info_dict") or {}
     title = info.get("fulltitle") or info.get("title") or ""
@@ -774,11 +849,44 @@ def _run_download_job(
                 return
             job["failed"] = failed
             completed_files = list(job.get("completed_files", []))
-            if audio_only and completed_files:
-                job["status"] = "transcribing"
-                job["transcript_total"] = len(completed_files)
-                job["transcript_completed"] = 0
-                job["transcript_started_at"] = time.time()
+
+        reencode_targets: List[tuple[dict, Path]] = []
+        if not audio_only and completed_files:
+            for file_info in completed_files:
+                path_str = file_info.get("path")
+                if not path_str:
+                    continue
+                candidate = Path(path_str)
+                if (
+                    candidate.exists()
+                    and candidate.suffix.lower() == ".mp4"
+                    and _is_instagram_path(candidate, output_dir)
+                ):
+                    reencode_targets.append((file_info, candidate))
+        if reencode_targets:
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if job:
+                    job["status"] = "reencoding"
+                    job["reencode_total"] = len(reencode_targets)
+                    job["reencode_completed"] = 0
+                    job["reencode_h264"] = True
+            for idx, (file_info, target_path) in enumerate(reencode_targets, start=1):
+                _reencode_video_to_h264(target_path)
+                file_info["path"] = str(target_path)
+                with JOBS_LOCK:
+                    job = JOBS.get(job_id)
+                    if job:
+                        job["reencode_completed"] = idx
+
+        if audio_only and completed_files:
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if job:
+                    job["status"] = "transcribing"
+                    job["transcript_total"] = len(completed_files)
+                    job["transcript_completed"] = 0
+                    job["transcript_started_at"] = time.time()
         transcripts: List[Dict[str, str]] = []
         if audio_only and completed_files:
             for file_info in completed_files:
@@ -889,7 +997,11 @@ def api_download():
         transcript_language = None
 
     job_id = _create_job(
-        len(urls), output_dir, audio_only, transcript_format, transcript_language
+        len(urls),
+        output_dir,
+        audio_only,
+        transcript_format,
+        transcript_language,
     )
     thread = threading.Thread(
         target=_run_download_job,
@@ -913,7 +1025,7 @@ def api_download():
             "total": len(urls),
             "output_dir": str(output_dir.resolve()),
         }
-    )
+        )
 
 
 @app.get("/api/progress/<job_id>")
@@ -980,6 +1092,9 @@ def job_progress(job_id: str):
             "transcript_started_at": snapshot.get("transcript_started_at"),
             "transcript_errors": transcript_errors,
             "transcript_language": snapshot.get("transcript_language"),
+            "reencode_total": snapshot.get("reencode_total", 0),
+            "reencode_completed": snapshot.get("reencode_completed", 0),
+            "reencode_h264": snapshot.get("reencode_h264", False),
             "error": snapshot.get("error"),
             "output_dir": snapshot.get("output_dir"),
         }
