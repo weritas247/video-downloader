@@ -45,7 +45,15 @@ def build_yt_dlp_opts(
     *,
     keep_video_when_audio_only: bool = False,
 ) -> tuple[dict, str]:
-    video_format = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+    video_format = (
+        "bv*[ext=mp4][vcodec^=avc]+ba[ext=m4a]/"
+        "bv*[ext=mp4][vcodec^=h264]+ba[ext=m4a]/"
+        "b[ext=mp4][vcodec^=avc]/"
+        "b[ext=mp4][vcodec^=h264]/"
+        "bv*[ext=mp4]+ba[ext=m4a]/"
+        "b[ext=mp4]/"
+        "bv*+ba/b"
+    )
     if audio_only and not keep_video_when_audio_only:
         format_selector = "bestaudio/best"
         merge_ext = "mp3"
@@ -57,6 +65,7 @@ def build_yt_dlp_opts(
     )
     output_template = str(output_dir / template)
 
+    postprocessors: list[dict] = []
     opts = {
         "format": format_selector,
         "outtmpl": {"default": output_template},
@@ -66,15 +75,30 @@ def build_yt_dlp_opts(
         "merge_output_format": merge_ext,
     }
     if audio_only:
-        opts["postprocessors"] = [
+        postprocessors.append(
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }
-        ]
+        )
         if keep_video_when_audio_only:
             opts["keepvideo"] = True
+            postprocessors.append(
+                {
+                    "key": "FFmpegVideoConvertor",
+                    "preferedformat": "mp4",
+                }
+            )
+    else:
+        postprocessors.append(
+            {
+                "key": "FFmpegVideoConvertor",
+                "preferedformat": "mp4",
+            }
+        )
+    if postprocessors:
+        opts["postprocessors"] = postprocessors
     return opts, template
 
 

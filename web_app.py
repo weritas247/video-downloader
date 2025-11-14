@@ -61,11 +61,54 @@ HTML_PAGE = """<!doctype html>
     .checkbox-pill input { width: auto; margin: 0; }
     .form-actions { display: flex; justify-content: flex-end; }
     #status { white-space: pre-wrap; background: var(--panel); padding: 1rem; margin-top: 1rem; border-radius: 12px; border: 1px solid var(--panel-border); min-height: 3rem; }
-    #history { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
-    .history-entry { background: var(--panel); border-radius: 12px; border: 1px solid var(--panel-border); padding: 1rem; display: flex; gap: 1rem; align-items: flex-start; }
-    .history-entry.warning { border-color: var(--error); background: #2a1c1f; }
-    .history-thumb { width: 96px; height: 54px; border-radius: 8px; object-fit: cover; background: #0f111c; flex-shrink: 0; border: 1px solid var(--panel-border); cursor: pointer; }
-    .history-content { flex: 1; white-space: pre-wrap; }
+    #history { margin-top: 1rem; display: flex; flex-direction: column; gap: 1rem; }
+    .history-entry {
+      position: relative;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 22px;
+      padding: 1.1rem;
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      box-shadow: 0 12px 30px rgba(5, 5, 10, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .history-entry::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+      opacity: 0.6;
+      pointer-events: none;
+    }
+    .history-entry:hover {
+      transform: translateY(-6px);
+      box-shadow: 0 15px 32px rgba(5, 5, 10, 0.55);
+    }
+    .history-entry.warning {
+      border: 1px solid rgba(255, 107, 107, 0.3);
+      box-shadow: 0 15px 32px rgba(255, 107, 107, 0.25);
+    }
+    .history-thumb {
+      width: 110px;
+      height: 62px;
+      border-radius: 16px;
+      object-fit: cover;
+      background: #0f111c;
+      flex-shrink: 0;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: inset 0 1px 2px rgba(255,255,255,0.05);
+      cursor: pointer;
+    }
+    .history-content {
+      flex: 1;
+      white-space: pre-wrap;
+      position: relative;
+      z-index: 1;
+      line-height: 1.45;
+    }
     #modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.8); display: none; align-items: center; justify-content: center; z-index: 999; }
     #modal-backdrop.active { display: flex; }
     #modal-content { max-width: 90vw; max-height: 90vh; }
@@ -317,7 +360,6 @@ HTML_PAGE = """<!doctype html>
       const transcriptErrors = Array.isArray(entry.transcriptErrors) ? entry.transcriptErrors : [];
       const timestamp = entry.timestamp || Date.now();
       const lines = [
-        "파일명:",
         ...filenames.map((name) => `- ${name}`),
         `결과: ${entry.success}/${entry.total}`,
       ];
@@ -335,8 +377,10 @@ HTML_PAGE = """<!doctype html>
           lines.push(`- ${label}`);
         });
       }
-      lines.push(`완료 시각: ${new Date(timestamp).toLocaleString()}`);
-      return lines.join("\\n");
+      return {
+        body: lines.join("\\n"),
+        timestampLabel: `완료 시각: ${new Date(timestamp).toLocaleString()}`,
+      };
     };
 
     const saveHistory = () => {
@@ -515,7 +559,18 @@ HTML_PAGE = """<!doctype html>
       thumb.addEventListener("click", () => openModal(thumb.src));
       const content = document.createElement("div");
       content.className = "history-content";
-      content.textContent = formatHistoryText(entry);
+      const { body, timestampLabel } = formatHistoryText(entry);
+      const textWrapper = document.createElement("div");
+      textWrapper.textContent = body;
+      const timestampEl = document.createElement("div");
+      timestampEl.textContent = timestampLabel;
+      timestampEl.style.fontSize = "0.75rem";
+      timestampEl.style.color = "rgba(255,255,255,0.55)";
+      timestampEl.style.position = "absolute";
+      timestampEl.style.top = "0.75rem";
+      timestampEl.style.right = "1rem";
+      content.appendChild(textWrapper);
+      content.appendChild(timestampEl);
       wrapper.appendChild(thumb);
       wrapper.appendChild(content);
       return wrapper;
