@@ -120,6 +120,68 @@ HTML_PAGE = """<!doctype html>
     #progress-text { margin-top: 0.4rem; color: var(--muted); font-size: 0.95rem; }
     #transcript-status { margin-top: 0.4rem; color: var(--muted); font-size: 0.95rem; }
     .hidden { display: none; }
+    .history-tabs {
+      display: inline-flex;
+      gap: 0.4rem;
+      margin-top: 0.6rem;
+      margin-bottom: 0.6rem;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+      padding: 0.2rem;
+    }
+    .history-tab {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      padding: 0.35rem 0.9rem;
+      border-radius: 999px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    .history-tab.active {
+      background: var(--accent);
+      color: #fff;
+    }
+    .toast-container {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      z-index: 1000;
+      pointer-events: none;
+    }
+    .toast {
+      min-width: 260px;
+      background: rgba(27, 31, 47, 0.95);
+      color: var(--text);
+      padding: 0.9rem 1rem;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+      transform: translateX(140%);
+      opacity: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      pointer-events: auto;
+    }
+    .toast.show {
+      animation: toast-slide 0.5s ease forwards;
+    }
+    .toast.hide {
+      animation: toast-hide 0.4s ease forwards;
+    }
+    @keyframes toast-slide {
+      from { transform: translateX(140%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes toast-hide {
+      from { transform: translateX(0); opacity: 1; }
+      to { transform: translateX(140%); opacity: 0; }
+    }
     @media (max-width: 640px) {
       body { padding: 1rem; }
       form { padding: 1.25rem; }
@@ -178,12 +240,17 @@ HTML_PAGE = """<!doctype html>
       <h2 style="margin:0; font-size:1.2rem;">다운로드 기록</h2>
       <button id="clear-history" type="button" class="secondary-btn">기록 초기화</button>
     </div>
+    <div class="history-tabs" id="history-tabs">
+      <button type="button" class="history-tab active" data-tab="all">다운로드</button>
+      <button type="button" class="history-tab" data-tab="failed">다운로드 실패</button>
+    </div>
     <div id="history"></div>
     <div id="modal-backdrop">
       <div id="modal-content">
         <img id="modal-image" src="" alt="preview" />
       </div>
     </div>
+    <div class="toast-container" id="toast-container"></div>
   </div>
   <script>
     const STORAGE_KEY = "video-downloader-history";
@@ -203,6 +270,8 @@ HTML_PAGE = """<!doctype html>
     const progressBar = document.getElementById("progress-bar");
     const progressText = document.getElementById("progress-text");
     const transcriptStatus = document.getElementById("transcript-status");
+    const toastContainer = document.getElementById("toast-container");
+    const historyTabs = document.querySelectorAll(".history-tab");
     const PLACEHOLDER_THUMB = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="120" height="68" viewBox="0 0 120 68"%3E%3Crect width="120" height="68" rx="8" fill="%232d334a"/%3E%3Cpath d="M48 22l26 12-26 12z" fill="%235a8dee"/%3E%3C/svg%3E';
     const createSound = (path) => {
       const audio = new Audio(path);
@@ -221,6 +290,39 @@ HTML_PAGE = """<!doctype html>
       } catch (error) {
         console.warn("사운드 재생 실패", error);
       }
+    };
+    const createToast = (title, message, type = "success") => {
+      if (!toastContainer) return;
+      const toast = document.createElement("div");
+      toast.className = "toast";
+      toast.dataset.type = type;
+      const strong = document.createElement("strong");
+      strong.textContent = title;
+      const span = document.createElement("span");
+      span.textContent = message;
+      toast.appendChild(strong);
+      toast.appendChild(span);
+      toastContainer.appendChild(toast);
+      requestAnimationFrame(() => toast.classList.add("show"));
+      const hideToast = () => {
+        toast.classList.remove("show");
+        toast.classList.add("hide");
+        setTimeout(() => toast.remove(), 400);
+      };
+      setTimeout(hideToast, 4000);
+      toast.addEventListener("click", hideToast);
+    };
+    const showDownloadToast = (success, details = "") => {
+      const title = success ? "다운로드 완료" : "다운로드 실패";
+      const message = success
+        ? (details || "모든 항목을 저장했습니다.")
+        : (details || "일부 항목을 다시 시도하세요.");
+      createToast(title, message, success ? "success" : "error");
+    };
+    const showTranscriptToast = (success, details = "") => {
+      const title = success ? "스크립트 추출 완료" : "스크립트 추출 실패";
+      const message = details || (success ? "자막 파일 생성이 완료되었습니다." : "스크립트 생성 중 에러가 발생했습니다.");
+      createToast(title, message, success ? "success" : "error");
     };
     const downloadSuccessSound = createSound("/sound/download_success.mp3");
     const downloadFailSound = createSound("/sound/downalod_fail.mp3");
@@ -259,6 +361,7 @@ HTML_PAGE = """<!doctype html>
     let activeJobId = null;
     let autoStartTimer = null;
     let historyEntries = [];
+    let historyFilter = "all";
     let transcriptStartTimestamp = null;
     let downloadSoundPlayed = false;
     let downloadFailSoundPlayed = false;
@@ -422,9 +525,28 @@ HTML_PAGE = """<!doctype html>
       }
     };
 
+    const getFilteredHistoryEntries = () => {
+      if (historyFilter === "failed") {
+        return historyEntries.filter(
+          (entry) => Array.isArray(entry.failed) && entry.failed.length > 0,
+        );
+      }
+      return historyEntries.filter(
+        (entry) => !Array.isArray(entry.failed) || entry.failed.length === 0,
+      );
+    };
+
     const renderHistory = () => {
       historyBox.innerHTML = "";
-      historyEntries.forEach((entry) => {
+      const filtered = getFilteredHistoryEntries();
+      if (!filtered.length) {
+        const emptyState = document.createElement("div");
+        emptyState.style.color = "var(--muted)";
+        emptyState.textContent = "표시할 기록이 없습니다.";
+        historyBox.appendChild(emptyState);
+        return;
+      }
+      filtered.forEach((entry) => {
         historyBox.appendChild(createHistoryElement(entry));
       });
     };
@@ -515,6 +637,7 @@ HTML_PAGE = """<!doctype html>
               downloadSoundPlayed = true;
               playSound(downloadSuccessSound);
             }
+            showDownloadToast(true);
           } else if (data.status === "completed") {
             stopPolling();
             statusBox.textContent = "다운로드 완료!";
@@ -525,6 +648,7 @@ HTML_PAGE = """<!doctype html>
               downloadSoundPlayed = true;
               playSound(downloadSuccessSound);
             }
+            showDownloadToast(true);
           } else if (data.status === "error") {
             stopPolling();
             statusBox.textContent = data.error || "다운로드 중 오류가 발생했습니다.";
@@ -533,6 +657,7 @@ HTML_PAGE = """<!doctype html>
               downloadFailSoundPlayed = true;
               playSound(downloadFailSound);
             }
+            showDownloadToast(false, data.error || "다운로드 중 오류가 발생했습니다.");
           }
           if (
             !transcriptSoundPlayed &&
@@ -543,6 +668,7 @@ HTML_PAGE = """<!doctype html>
           ) {
             transcriptSoundPlayed = true;
             playSound(transcriptSuccessSound);
+            showTranscriptToast(true);
           }
           if (
             !transcriptFailSoundPlayed &&
@@ -552,6 +678,7 @@ HTML_PAGE = """<!doctype html>
           ) {
             transcriptFailSoundPlayed = true;
             playSound(transcriptFailSound);
+            showTranscriptToast(false);
           }
         } catch (error) {
           stopPolling();
@@ -599,10 +726,12 @@ HTML_PAGE = """<!doctype html>
       scheduleAutoStart();
     });
 
-    urlsField.addEventListener("input", (event) => {
+    urlsField.addEventListener("input", () => {
       if (!urlsField.value.trim()) {
         cancelAutoStart();
+        return;
       }
+      scheduleAutoStart();
     });
 
     audioOnlyField.addEventListener("change", () => {
@@ -655,6 +784,14 @@ HTML_PAGE = """<!doctype html>
       saveHistory();
       renderHistory();
       statusBox.textContent = "기록을 초기화했습니다.";
+    });
+    historyTabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        historyTabs.forEach((btn) => btn.classList.remove("active"));
+        tab.classList.add("active");
+        historyFilter = tab.dataset.tab === "failed" ? "failed" : "all";
+        renderHistory();
+      });
     });
   </script>
 </body>
