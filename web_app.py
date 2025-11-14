@@ -44,7 +44,15 @@ HTML_PAGE = """<!doctype html>
     }
     body { font-family: system-ui, sans-serif; min-height: 100vh; margin: 0; line-height: 1.5; background: var(--bg); color: var(--text); padding: 2rem; box-sizing: border-box; }
     .container { max-width: 760px; margin: 0 auto; }
-    textarea, input, select { width: 100%; padding: 0.75rem; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel); color: var(--text); }
+    textarea, input, select {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      transition: transform 0.5s ease, box-shadow 0.5s ease;
+    }
     textarea::placeholder, input::placeholder { color: var(--muted); }
     button { padding: 0.6rem 1.4rem; font-size: 1rem; border-radius: 999px; border: none; background: var(--accent); color: #fff; cursor: pointer; transition: background 0.2s ease; }
     button:hover { background: var(--accent-strong); }
@@ -120,6 +128,25 @@ HTML_PAGE = """<!doctype html>
     #progress-text { margin-top: 0.4rem; color: var(--muted); font-size: 0.95rem; }
     #transcript-status { margin-top: 0.4rem; color: var(--muted); font-size: 0.95rem; }
     .hidden { display: none; }
+    @keyframes input-glow {
+      0% { box-shadow: 0 0 0 rgba(90, 141, 238, 0.0); transform: scale(1); }
+      50% { box-shadow: 0 10px 25px rgba(90, 141, 238, 0.45); transform: scale(1.03); }
+      100% { box-shadow: 0 0 0 rgba(90, 141, 238, 0.0); transform: scale(1); }
+    }
+    textarea.animate-reset {
+      animation: input-glow 0.8s ease;
+    }
+    @keyframes input-error {
+      0% { transform: translateX(0); }
+      25% { transform: translateX(-6px); }
+      50% { transform: translateX(6px); }
+      75% { transform: translateX(-3px); }
+      100% { transform: translateX(0); }
+    }
+    textarea.url-error {
+      animation: input-error 0.45s ease;
+      border-color: var(--error);
+    }
     .history-tabs {
       display: inline-flex;
       gap: 0.4rem;
@@ -399,6 +426,27 @@ HTML_PAGE = """<!doctype html>
         if (!urlsField.value.trim()) return;
         form.requestSubmit();
       }, 3000);
+    };
+
+    const splitInputUrls = (blob) => {
+      return blob
+        .split(/[\n,]/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+    };
+
+    const isValidVideoUrl = (url) => /^https?:\\/\\/.+/i.test(url);
+
+    const flagUrlFieldError = () => {
+      urlsField.classList.remove("animate-reset");
+      urlsField.classList.add("url-error");
+      setTimeout(() => urlsField.classList.remove("url-error"), 600);
+    };
+
+    const showUrlWarning = (message) => {
+      statusBox.textContent = message;
+      createToast("URL 확인 필요", message, "error");
+      flagUrlFieldError();
     };
 
     const normalizeCompletedItem = (item) => {
@@ -693,6 +741,16 @@ HTML_PAGE = """<!doctype html>
       cancelAutoStart();
       stopPolling();
       resetProgress();
+      const parsedUrls = splitInputUrls(urlsField.value);
+      if (!parsedUrls.length) {
+        showUrlWarning("최소 한 개 이상의 URL을 입력해주세요.");
+        return;
+      }
+      const invalid = parsedUrls.filter((item) => !isValidVideoUrl(item));
+      if (invalid.length) {
+        showUrlWarning("형식에 맞지 않는 URL이 포함되어 있습니다.");
+        return;
+      }
       statusBox.textContent = "다운로드 준비 중...";
       const payload = {
         urls: document.getElementById("urls").value,
@@ -714,6 +772,8 @@ HTML_PAGE = """<!doctype html>
         }
         activeJobId = data.job_id;
         urlsField.value = "";
+        urlsField.classList.add("animate-reset");
+        setTimeout(() => urlsField.classList.remove("animate-reset"), 900);
         progressWrapper.classList.remove("hidden");
         progressText.textContent = `0% (0/${data.total}) 대기 중`;
         pollProgress(data.job_id);
